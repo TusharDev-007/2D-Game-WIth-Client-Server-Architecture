@@ -41,7 +41,7 @@ class TextBox:
             elif event.key == pygame.K_BACKSPACE:
                 self.text = self.text[:-1]
             else:
-                if len(self.text) < 15: # Max username length
+                if len(self.text) < 15:
                     self.text += event.unicode
 
     def update(self):
@@ -50,7 +50,6 @@ class TextBox:
         display_text = "*" * len(self.text) if self.is_password else self.text
         self.txt_surface = self.font.render(display_text, True, (255, 255, 255))
         
-        # Blinking cursor
         self.cursor_timer += 1
         if self.cursor_timer >= 30:
             self.show_cursor = not self.show_cursor
@@ -61,7 +60,6 @@ class TextBox:
         pygame.draw.rect(screen, self.color, self.rect, 2)
         
         if self.active and self.show_cursor:
-            # Draw cursor line
             cursor_x = self.rect.x + 10 + self.txt_surface.get_width()
             pygame.draw.line(screen, (255, 255, 255), (cursor_x, self.rect.y + 8), (cursor_x, self.rect.y + 30), 2)
 
@@ -98,11 +96,11 @@ class Button:
 # MAIN CLIENT CLASS
 # ==========================================
 class GameClient:
-    def __init__(self, player_name="", mode="", auth_type="", password=""):
-        self.player_name = player_name
-        self.mode = mode
-        self.auth_type = auth_type
-        self.password = password
+    def __init__(self):
+        self.player_name = ""
+        self.mode = ""
+        self.auth_type = ""
+        self.password = ""
         self.player_id = None
         self.role = None
         self.socket = None
@@ -113,14 +111,12 @@ class GameClient:
         self.send_interval = 1 / 30
         self.is_shutting_down = False
         
-        # UI States: 'login', 'mode_select', 'connecting', 'waiting', 'playing', 'game_over'
         self.state = 'login' 
         self.error_message = ""
         self.stats = None
         self.show_leaderboard = False
         self.leaderboard_data = []
 
-        # Round / Score data
         self.round = 0
         self.max_rounds = 5
         self.my_score = 0
@@ -131,6 +127,7 @@ class GameClient:
         self.died_this_round = False
         self.match_result = None
         self.health_pack = None
+        self.opponent_name = "Opponent"
 
         self.local_tank = None
         self.remote_data = {
@@ -141,9 +138,7 @@ class GameClient:
         }
         self.bullets = []
         self.remote_bullets = []
-        self.opponent_name = "Opponent"
 
-        # Initialize Pygame & Audio
         pygame.init()
         try:
             pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
@@ -156,14 +151,13 @@ class GameClient:
             self.sounds = {}
 
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        pygame.display.set_caption("Tank Battle Arena - Cloud")
+        pygame.display.set_caption("Tank Battle Arena")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 28)
         self.small_font = pygame.font.Font(None, 20)
         self.big_font = pygame.font.Font(None, 48)
         self.winner_font = pygame.font.Font(None, 72)
 
-        # UI Elements
         self.username_box = TextBox(WINDOW_WIDTH//2 - 150, 250, 300, 40)
         self.password_box = TextBox(WINDOW_WIDTH//2 - 150, 320, 300, 40, is_password=True)
         
@@ -174,8 +168,29 @@ class GameClient:
         self.btn_opponent = Button(WINDOW_WIDTH//2 - 160, 380, 320, 50, "PLAY VS OPPONENT", (200, 50, 50), (255, 80, 80))
 
     # ---------------- NETWORKING ----------------
+    def _recv_one_message(self, timeout=5):
+        self.socket.settimeout(timeout)
+        try:
+            while "\n" not in self.buffer:
+                try:
+                    data = self.socket.recv(BUFFER_SIZE)
+                except socket.timeout:
+                    return None
+                if not data:
+                    return None
+                self.buffer += data.decode()
+        finally:
+            self.socket.settimeout(None)
+
+        line, self.buffer = self.buffer.split("\n", 1)
+        if not line.strip():
+            return self._recv_one_message(timeout)
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            return self._recv_one_message(timeout)
+
     def attempt_auth(self, auth_type):
-        """Runs in a separate thread to prevent UI freezing"""
         self.player_name = self.username_box.text.strip()
         self.password = self.password_box.text.strip()
         self.auth_type = auth_type
@@ -186,18 +201,17 @@ class GameClient:
 
         self.state = 'connecting'
         self.error_message = ""
-        pygame.display.set_caption("Connecting to Server...")
-
+        
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(5) # 5 second timeout
+            self.socket.settimeout(5)
             self.socket.connect((SERVER_IP, SERVER_PORT))
             self.socket.send((json.dumps({'type': 'join', 'name': self.player_name}) + "\n").encode())
 
-            data = self.socket.recv(BUFFER_SIZE).decode()
-            for line in data.split("\n"):
-                if line.strip() and json.loads(line).get('type') == 'welcome':
-                    self.player_id = json.loads(line)['player_id']
+            # Read welcome
+            msg = self._recv_one_message()
+            if msg and msg.get('type') == 'welcome':
+                self.player_id = msg['player_id']
 
             # Send Auth
             self.socket.send((json.dumps({
@@ -207,32 +221,31 @@ class GameClient:
             }) + "\n").encode())
 
             # Wait for Auth Response
-            data = self.socket.recv(BUFFER_SIZE).decode()
             auth_ok = False
-            for line in data.split("\n"):
-                if not line.strip(): continue
-                msg = json.loads(line)
-                if msg['type'] == 'auth_response':
+            for _ in range(5):
+                msg = self._recv_one_message()
+                if msg is None: break
+                if msg.get('type') == 'auth_response':
                     if msg['success']:
                         self.connected = True
                         self.stats = msg['stats']
                         auth_ok = True
                     else:
                         self.error_message = msg.get('message', 'Auth failed')
-                        self.state = 'login'
-                        pygame.display.set_caption("Tank Battle Arena - Auth Failed")
-                        self.socket.close()
-                        return
+                    break
 
             if auth_ok:
                 self.socket.settimeout(None)
                 self.state = 'mode_select'
-                pygame.display.set_caption(f"Welcome, {self.player_name}")
                 threading.Thread(target=self.receive_messages, daemon=True).start()
+            else:
+                self.state = 'login'
+                if self.socket: self.socket.close()
         except Exception as e:
+            print(f"[CLIENT] Auth error: {e}")
             self.error_message = "Connection failed. Server offline."
             self.state = 'login'
-            pygame.display.set_caption("Tank Battle Arena - Connection Error")
+            if self.socket: self.socket.close()
 
     def receive_messages(self):
         while self.running and self.connected:
@@ -376,8 +389,7 @@ class GameClient:
                 rx, ry = self.remote_data['x'], self.remote_data['y']
                 if rx < b.x < rx + 45 and ry < b.y < ry + 45:
                     b.alive = False
-                    try:
-                        self.socket.send((json.dumps({'type': 'hit_registered', 'target_id': 'bot' if self.mode == 'bot' else self.remote_data.get('player_id')}) + "\n").encode())
+                    try: self.socket.send((json.dumps({'type': 'hit_registered', 'target_id': 'bot' if self.mode == 'bot' else self.remote_data.get('player_id')}) + "\n").encode())
                     except: pass
                     self.bullets.remove(b)
                     continue
@@ -577,7 +589,6 @@ class GameClient:
                                 except: pass
                             else: self.show_leaderboard = False
 
-            # LOGIC UPDATES
             if self.state == 'login':
                 self.username_box.update()
                 self.password_box.update()
@@ -603,7 +614,6 @@ class GameClient:
                 self.send_input()
                 self.send_game_state()
 
-            # DRAWING
             if self.state == 'login':
                 self.draw_login_screen()
             elif self.state == 'mode_select':
@@ -641,7 +651,6 @@ class GameClient:
         pygame.quit()
         sys.exit()
 
-# Helper to draw remote tank
 def draw_remote_tank(screen, data):
     if not data['alive']: return
     x, y, angle, color = data['x'], data['y'], data['angle'], data['color']
