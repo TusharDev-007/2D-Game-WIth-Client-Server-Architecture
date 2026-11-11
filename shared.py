@@ -6,8 +6,8 @@ import random
 # CHANGE THESE WHEN DEPLOYING TO CLOUD
 # Example: SERVER_IP = "shuttle.proxy.rlwy.net"
 #          SERVER_PORT = 15140
-SERVER_IP = "127.0.0.1"  # <--- Change this to Railway Domain
-SERVER_PORT = 5555       # <--- Change this to Railway Port
+SERVER_IP = "altaria.proxy.rlwy.net"  # <--- Change this to Railway Domain
+SERVER_PORT = 24106       # <--- Change this to Railway Port
 BUFFER_SIZE = 4096
 WINDOW_WIDTH = 1000
 WINDOW_HEIGHT = 700
